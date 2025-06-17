@@ -40,11 +40,12 @@ fn backup_wleds(wleds: Vec<ServiceInfo>) {
     for wled in wleds.iter() {
         if let Some(ip) = wled.get_addresses().iter().next() {
             let url = format!("http://{ip}/presets.json");
-            let file = format!("{}.json", wled.get_hostname());
+            let minimal_hostname = wled.get_hostname().split('.').next().unwrap_or("wled");
+            let file = format!("{}.json", minimal_hostname);
             if let Err(result) = download_file(&url, &file) {
-                eprintln!("Failed to backup {}: {result}", wled.get_hostname());
+                eprintln!("Failed to backup {}: {result}", minimal_hostname);
             } else {
-                println!("Backed up {}: {url} -> {file}", wled.get_hostname());
+                println!("Backed up {}: {url} -> {file}", minimal_hostname);
             }
         }
     }
