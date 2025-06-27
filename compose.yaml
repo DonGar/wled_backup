@@ -6,7 +6,6 @@ services:
       context: .
       target: final
     restart: unless-stopped
-    ports:
-      - 5800:5800
     volumes:
       - ./wled_backup:/backup
+    network_mode: host
