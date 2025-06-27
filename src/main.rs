@@ -1,5 +1,6 @@
 use clap::Parser;
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::copy;
 use std::path::PathBuf;
@@ -18,7 +19,7 @@ struct Args {
 }
 
 fn discover_wleds(search_duration: std::time::Duration) -> Vec<ServiceInfo> {
-    let mut wleds: Vec<ServiceInfo> = Vec::new();
+    let mut wleds = HashMap::new();
 
     // Create a daemon
     let mdns = ServiceDaemon::new().expect("Failed to create daemon");
@@ -30,14 +31,19 @@ fn discover_wleds(search_duration: std::time::Duration) -> Vec<ServiceInfo> {
     while let Ok(event) = receiver.recv_timeout(search_duration) {
         match event {
             ServiceEvent::ServiceResolved(info) => {
-                wleds.push(info.clone());
-                println!("Discovered: {}", info.get_fullname());
+                // Sometimes we get multiple responses for the same device. We use the
+                // HashMap as we way to deduplicate them based on hostname.
+                if !wleds.contains_key(&info.get_hostname().to_string())
+                {
+                    wleds.insert(info.get_hostname().to_string(), info.clone());
+                    println!("Discovered: {}", info.get_fullname());
+                }
             }
             _other_event => {}
         }
     }
 
-    wleds
+    wleds.into_values().collect()
 }
 
 fn download_file(url: &str, path: &str) -> Result<(), Box<dyn std::error::Error>> {
