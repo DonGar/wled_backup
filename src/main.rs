@@ -48,20 +48,27 @@ fn download_file(url: &str, path: &str) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-fn backup_wleds(wleds: Vec<ServiceInfo>, out_dir: &PathBuf) {
+fn backup_wleds(wleds: Vec<ServiceInfo>, out_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+
+    let mut final_result = Ok(());
+
     for wled in wleds.iter() {
         if let Some(ip) = wled.get_addresses().iter().next() {
             let url = format!("http://{}:{}/presets.json", ip, wled.get_port());
             let minimal_hostname = wled.get_hostname().split('.').next().unwrap_or("wled");
             let mut file = out_dir.clone();
             file.push(format!("{}.json", minimal_hostname));
+            print!("Backing up {minimal_hostname}: {url} -> {file:?}: ");
             if let Err(result) = download_file(&url, file.to_str().unwrap()) {
-                eprintln!("Failed to backup {}: {result}", minimal_hostname);
+                println!("{result}");
+                final_result = Err(result);
             } else {
-                println!("Backed up {}: {url} -> {:?}", minimal_hostname, file);
+                println!("SUCCESS");
             }
         }
     }
+
+    final_result
 }
 
 fn main() {
@@ -77,7 +84,11 @@ fn main() {
     );
 
     let wleds = discover_wleds(std::time::Duration::from_secs(args.search_secs));
-    backup_wleds(wleds, &args.out_dir);
+
+    if let Err(result) = backup_wleds(wleds, &args.out_dir) {
+        std::process::exit(1);
+    }
+
     println!("Finished");
 }
 
