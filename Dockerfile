@@ -63,7 +63,7 @@ USER appuser
 
 # Copy the executable from the "build" stage.
 COPY --from=build /bin/wled_backup /bin/
-COPY binary_wrapper.sh /bin/
+COPY --chmod=0755  binary_wrapper.sh /bin/
 
 # What the container should run when it is started.
 CMD ["/bin/binary_wrapper.sh"]
