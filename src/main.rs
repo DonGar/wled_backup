@@ -33,8 +33,7 @@ fn discover_wleds(search_duration: std::time::Duration) -> Vec<ServiceInfo> {
             ServiceEvent::ServiceResolved(info) => {
                 // Sometimes we get multiple responses for the same device. We use the
                 // HashMap as we way to deduplicate them based on hostname.
-                if !wleds.contains_key(&info.get_hostname().to_string())
-                {
+                if !wleds.contains_key(&info.get_hostname().to_string()) {
                     wleds.insert(info.get_hostname().to_string(), info.clone());
                     println!("Discovered: {}", info.get_fullname());
                 }
@@ -54,8 +53,10 @@ fn download_file(url: &str, path: &str) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-fn backup_wleds(wleds: Vec<ServiceInfo>, out_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-
+fn backup_wleds(
+    wleds: Vec<ServiceInfo>,
+    out_dir: &PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut final_result = Ok(());
 
     for wled in wleds.iter() {
@@ -91,7 +92,7 @@ fn main() {
 
     let wleds = discover_wleds(std::time::Duration::from_secs(args.search_secs));
 
-    if let Err(result) = backup_wleds(wleds, &args.out_dir) {
+    if let Err(_result) = backup_wleds(wleds, &args.out_dir) {
         std::process::exit(1);
     }
 
@@ -103,6 +104,7 @@ mod tests {
     use super::*;
     use std::fs;
     use std::thread;
+    use std::vec;
     use tempfile::tempdir;
     use tiny_http::{Response, Server};
 
@@ -135,8 +137,10 @@ mod tests {
         // TODO: Add IP V6 test case.
 
         // Start server in a background thread
-        let handle = mock_wled_server("127.0.0.1:80");
-        let handle_port = mock_wled_server("127.0.0.1:8080");
+        let servers = vec![
+            mock_wled_server("127.0.0.1:80"),
+            mock_wled_server("127.0.0.1:8080"),
+        ];
 
         // Prepare mock WLED device
         let wleds = vec![
@@ -149,15 +153,47 @@ mod tests {
         let out_dir = dir.path().to_path_buf();
 
         // Perform the backup.
-        backup_wleds(wleds, &out_dir);
+        let backup_wleds = backup_wleds(wleds, &out_dir);
+
+        assert!(backup_wleds.is_ok(), "Backup failed");
 
         // Check that the file exists
         validate_response_file(out_dir.join("testwled.json"));
         validate_response_file(out_dir.join("testwled_port.json"));
 
         // Shutdown the server
-        handle.join().unwrap();
-        handle_port.join().unwrap();
+        for handle in servers {
+            handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_backup_wleds_returns_error() {
+        // Start server in a background thread. Use different ports to avoid conflicts.
+        let servers = vec![mock_wled_server("127.0.0.1:81")];
+
+        // Prepare mock WLED device
+        let wleds = vec![
+            mock_service_info("testwled_port", "127.0.0.1", 8081), // Not served, so will fail.
+            mock_service_info("testwled", "127.0.0.1", 81),
+        ];
+
+        // Use a temp directory
+        let dir = tempdir().unwrap();
+        let out_dir = dir.path().to_path_buf();
+
+        // Perform the backup.
+        let backup_wleds = backup_wleds(wleds, &out_dir);
+
+        assert!(backup_wleds.is_err(), "Backup failed, as it should have.");
+
+        // Check that the file exists for teh value correctly served.
+        validate_response_file(out_dir.join("testwled.json"));
+
+        // Shutdown the server
+        for handle in servers {
+            handle.join().unwrap();
+        }
     }
 
     #[test]
