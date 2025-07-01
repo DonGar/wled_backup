@@ -3,6 +3,7 @@ use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::copy;
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 /// Backup WLED presets from discovered devices.
@@ -53,6 +54,29 @@ fn download_file(url: &str, path: &str) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
+fn backup_wled(
+    hostname: &str,
+    ip: &IpAddr,
+    port: u16,
+    out_dir: &PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // let url_cfg = format!("http://{}:{}/cfg.json", ip, wled.get_port());
+    // let url_presets = format!("http://{}:{}/presets.json", ip, wled.get_port());
+
+    let url = format!("http://{}:{}/cfg.json", ip, port);
+
+    let mut file = out_dir.clone();
+    file.push(format!("{hostname}.json"));
+    print!("Backing up {hostname}: {url} -> {file:?}: ");
+    if let Err(result) = download_file(&url, file.to_str().unwrap()) {
+        println!("{result}");
+        Err(result)
+    } else {
+        println!("SUCCESS");
+        Ok(())
+    }
+}
+
 fn backup_wleds(
     wleds: Vec<ServiceInfo>,
     out_dir: &PathBuf,
@@ -60,17 +84,11 @@ fn backup_wleds(
     let mut final_result = Ok(());
 
     for wled in wleds.iter() {
+        let hostname = wled.get_hostname().split('.').next().unwrap_or("wled");
+
         if let Some(ip) = wled.get_addresses().iter().next() {
-            let url = format!("http://{}:{}/presets.json", ip, wled.get_port());
-            let minimal_hostname = wled.get_hostname().split('.').next().unwrap_or("wled");
-            let mut file = out_dir.clone();
-            file.push(format!("{}.json", minimal_hostname));
-            print!("Backing up {minimal_hostname}: {url} -> {file:?}: ");
-            if let Err(result) = download_file(&url, file.to_str().unwrap()) {
-                println!("{result}");
+            if let Err(result) = backup_wled(&hostname, &ip, wled.get_port(), out_dir) {
                 final_result = Err(result);
-            } else {
-                println!("SUCCESS");
             }
         }
     }
