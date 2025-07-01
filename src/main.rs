@@ -1,8 +1,9 @@
 use clap::Parser;
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::copy;
+use std::io::{Write, copy};
 use std::net::IpAddr;
 use std::path::PathBuf;
 
@@ -46,35 +47,38 @@ fn discover_wleds(search_duration: std::time::Duration) -> Vec<ServiceInfo> {
     wleds.into_values().collect()
 }
 
-fn download_file(url: &str, path: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let response = reqwest::blocking::get(url)?;
-    let mut dest = File::create(path)?;
-    let mut content = response;
-    copy(&mut content, &mut dest)?;
-    Ok(())
-}
-
 fn backup_wled(
-    hostname: &str,
     ip: &IpAddr,
     port: u16,
     out_dir: &PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // let url_cfg = format!("http://{}:{}/cfg.json", ip, wled.get_port());
-    // let url_presets = format!("http://{}:{}/presets.json", ip, wled.get_port());
+    let url_cfg = format!("http://{ip}:{port}/cfg.json");
+    let url_presets = format!("http://{ip}:{port}/presets.json");
 
-    let url = format!("http://{}:{}/cfg.json", ip, port);
+    let cfg_response_str = reqwest::blocking::get(url_cfg)?.text()?;
+    let cfg_json: Value = serde_json::from_str(&cfg_response_str)?;
 
-    let mut file = out_dir.clone();
-    file.push(format!("{hostname}.json"));
-    print!("Backing up {hostname}: {url} -> {file:?}: ");
-    if let Err(result) = download_file(&url, file.to_str().unwrap()) {
-        println!("{result}");
-        Err(result)
-    } else {
-        println!("SUCCESS");
-        Ok(())
-    }
+    let hostname = cfg_json
+        .get("id")
+        .ok_or_else(|| "Missing 'id' field in cfg.json")?
+        .get("name")
+        .ok_or_else(|| "Missing 'name' field in cfg.json")?
+        .as_str()
+        .ok_or_else(|| "Expected 'name' to be a string in cfg.json")?;
+
+    // Save out cfg.json
+    let cfg_path = out_dir.join(format!("{hostname}_cfg.json"));
+    let mut cfg_file = File::create(cfg_path.to_str().unwrap())?;
+    cfg_file.write_all(cfg_response_str.as_bytes())?;
+    cfg_file.flush()?;
+
+    // Save out presets.json
+    let mut presets_response = reqwest::blocking::get(url_presets)?;
+    let presets_path = out_dir.join(format!("{hostname}_presets.json"));
+    let mut presets_file = File::create(presets_path)?;
+    copy(&mut presets_response, &mut presets_file)?;
+
+    Ok(())
 }
 
 fn backup_wleds(
@@ -84,10 +88,8 @@ fn backup_wleds(
     let mut final_result = Ok(());
 
     for wled in wleds.iter() {
-        let hostname = wled.get_hostname().split('.').next().unwrap_or("wled");
-
         if let Some(ip) = wled.get_addresses().iter().next() {
-            if let Err(result) = backup_wled(&hostname, &ip, wled.get_port(), out_dir) {
+            if let Err(result) = backup_wled(&ip, wled.get_port(), out_dir) {
                 final_result = Err(result);
             }
         }
@@ -121,6 +123,7 @@ fn main() {
 mod tests {
     use super::*;
     use std::fs;
+    use std::net::Ipv4Addr;
     use std::thread;
     use std::vec;
     use tempfile::tempdir;
@@ -131,23 +134,76 @@ mod tests {
         ServiceInfo::new("_wled._tcp.local.", name, name, ip, port, None).unwrap()
     }
 
-    fn mock_wled_server(addr: &str) -> thread::JoinHandle<()> {
+    fn cfg_body(hostname: &str) -> String {
+        format!(r#"{{"id":{{"name":"{}"}}}}"#, hostname)
+    }
+
+    fn mock_wled_server(addr: &str, cfg_body: &str) -> thread::JoinHandle<()> {
         // Start server in a background thread
+
+        let cfg_body = cfg_body.to_string(); // Clone the cfg_body to move into the thread
+
         let server = Server::http(addr).unwrap();
         let handle = thread::spawn(move || {
-            if let Ok(request) = server.recv() {
-                let response = Response::from_string("backup data");
-                request.respond(response).unwrap();
+            for _ in 0..2 {
+                if let Ok(request) = server.recv() {
+                    let url = request.url();
+                    let response = if url.ends_with("/cfg.json") {
+                        Response::from_string(cfg_body.clone())
+                        // .with_header("Content-Type: application/json".parse().unwrap())
+                    } else if url.ends_with("/presets.json") {
+                        Response::from_string("presets data")
+                        // .with_header("Content-Type: application/json".parse().unwrap())
+                    } else {
+                        Response::from_string("not found").with_status_code(404)
+                    };
+                    let _ = request.respond(response);
+                }
             }
         });
 
         handle
     }
 
-    fn validate_response_file(expected_file: PathBuf) {
+    fn validate_response_file(expected_file: PathBuf, expected_content: &str) {
         assert!(expected_file.exists());
         let contents = fs::read_to_string(expected_file).unwrap();
-        assert_eq!(contents, "backup data");
+        assert_eq!(contents, expected_content);
+    }
+
+    fn validate_response_files(out_dir: &PathBuf, hostname: &str) {
+        let cfg_path = out_dir.join(format!("{hostname}_cfg.json"));
+        let presets_path = out_dir.join(format!("{hostname}_presets.json"));
+
+        validate_response_file(cfg_path, &cfg_body(hostname));
+        validate_response_file(presets_path, "presets data");
+    }
+
+    #[test]
+    fn test_backup_wled_creates_file() {
+        // Start server in a background thread
+        let servers = vec![mock_wled_server("127.0.0.1:88", &cfg_body("testwled"))];
+
+        // Use a temp directory
+        let dir = tempdir().unwrap();
+        let out_dir = dir.path().to_path_buf();
+
+        // Perform the backup.
+        let backup_wled = backup_wled(
+            &IpAddr::V4("127.0.0.1".parse::<Ipv4Addr>().unwrap()),
+            88,
+            &out_dir,
+        );
+
+        assert!(backup_wled.is_ok(), "Backup failed");
+
+        // Check that the file exists
+        validate_response_files(&out_dir, "testwled");
+
+        // Shutdown the server
+        for handle in servers {
+            handle.join().unwrap();
+        }
     }
 
     #[test]
@@ -156,14 +212,14 @@ mod tests {
 
         // Start server in a background thread
         let servers = vec![
-            mock_wled_server("127.0.0.1:80"),
-            mock_wled_server("127.0.0.1:8080"),
+            mock_wled_server("127.0.0.1:80", &cfg_body("testwled")),
+            mock_wled_server("127.0.0.1:8080", &cfg_body("testwled_port")),
         ];
 
         // Prepare mock WLED device
         let wleds = vec![
-            mock_service_info("testwled", "127.0.0.1", 80),
-            mock_service_info("testwled_port", "127.0.0.1", 8080),
+            mock_service_info("mdns_name", "127.0.0.1", 80),
+            mock_service_info("mdns_name_port", "127.0.0.1", 8080),
         ];
 
         // Use a temp directory
@@ -176,8 +232,8 @@ mod tests {
         assert!(backup_wleds.is_ok(), "Backup failed");
 
         // Check that the file exists
-        validate_response_file(out_dir.join("testwled.json"));
-        validate_response_file(out_dir.join("testwled_port.json"));
+        validate_response_files(&out_dir, "testwled");
+        validate_response_files(&out_dir, "testwled_port");
 
         // Shutdown the server
         for handle in servers {
@@ -188,12 +244,12 @@ mod tests {
     #[test]
     fn test_backup_wleds_returns_error() {
         // Start server in a background thread. Use different ports to avoid conflicts.
-        let servers = vec![mock_wled_server("127.0.0.1:81")];
+        let servers = vec![mock_wled_server("127.0.0.1:81", &cfg_body("testwled"))];
 
         // Prepare mock WLED device
         let wleds = vec![
-            mock_service_info("testwled_port", "127.0.0.1", 8081), // Not served, so will fail.
-            mock_service_info("testwled", "127.0.0.1", 81),
+            mock_service_info("mdns_name_port", "127.0.0.1", 8081), // Not served, so will fail.
+            mock_service_info("mdns_name", "127.0.0.1", 81),
         ];
 
         // Use a temp directory
@@ -206,7 +262,7 @@ mod tests {
         assert!(backup_wleds.is_err(), "Backup failed, as it should have.");
 
         // Check that the file exists for teh value correctly served.
-        validate_response_file(out_dir.join("testwled.json"));
+        validate_response_files(&out_dir, "testwled");
 
         // Shutdown the server
         for handle in servers {
