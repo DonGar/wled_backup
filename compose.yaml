@@ -2,10 +2,12 @@
 
 services:
   wled_backup:
+    # image: dongar/wled-backup:latest
     build:
       context: .
       target: final
     restart: unless-stopped
+    user: "1000:1000"
     volumes:
       - ./wled_backup:/backup
     network_mode: host
