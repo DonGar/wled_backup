@@ -66,17 +66,23 @@ fn backup_wled(
         .as_str()
         .ok_or_else(|| "Expected 'name' to be a string in cfg.json")?;
 
+    println!("  host name: {hostname}");
+
     // Save out cfg.json
-    let cfg_path = out_dir.join(format!("{hostname}_cfg.json"));
+    let cfg_file_name = format!("{hostname}_cfg.json");
+    let cfg_path = out_dir.join(cfg_file_name.clone());
     let mut cfg_file = File::create(cfg_path.to_str().unwrap())?;
     cfg_file.write_all(cfg_response_str.as_bytes())?;
     cfg_file.flush()?;
+    println!("  saved: {cfg_file_name}");
 
     // Save out presets.json
+    let presets_file_name = format!("{hostname}_presets.json");
     let mut presets_response = reqwest::blocking::get(url_presets)?;
-    let presets_path = out_dir.join(format!("{hostname}_presets.json"));
+    let presets_path = out_dir.join(presets_file_name.clone());
     let mut presets_file = File::create(presets_path)?;
     copy(&mut presets_response, &mut presets_file)?;
+    println!("  saved: {presets_file_name}");
 
     Ok(())
 }
@@ -89,9 +95,12 @@ fn backup_wleds(
 
     for wled in wleds.iter() {
         if let Some(ip) = wled.get_addresses().iter().next() {
+            println!("Backing up {}", wled.get_hostname());
             if let Err(result) = backup_wled(&ip, wled.get_port(), out_dir) {
+                println!("  FAILED: {result}");
                 final_result = Err(result);
             }
+            println!("  SUCCESS");
         }
     }
 
