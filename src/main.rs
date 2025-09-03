@@ -47,6 +47,22 @@ fn discover_wleds(search_duration: std::time::Duration) -> Vec<ServiceInfo> {
     wleds.into_values().collect()
 }
 
+fn get_hostname_from_cfg(cfg_json: &Value) -> Result<&str, Box<dyn std::error::Error>> {
+    let hostname = cfg_json
+        .get("id")
+        .ok_or_else(|| "Missing 'id' field in cfg.json")?
+        .get("name")
+        .ok_or_else(|| "Missing 'name' field in cfg.json")?
+        .as_str()
+        .ok_or_else(|| "Expected 'name' to be a string in cfg.json")?;
+    
+    if hostname.trim().is_empty() {
+        return Err("Hostname is empty or contains only whitespace".into());
+    }
+    
+    Ok(hostname)
+}
+
 fn backup_wled(
     ip: &IpAddr,
     port: u16,
@@ -58,13 +74,7 @@ fn backup_wled(
     let cfg_response_str = reqwest::blocking::get(url_cfg)?.text()?;
     let cfg_json: Value = serde_json::from_str(&cfg_response_str)?;
 
-    let hostname = cfg_json
-        .get("id")
-        .ok_or_else(|| "Missing 'id' field in cfg.json")?
-        .get("name")
-        .ok_or_else(|| "Missing 'name' field in cfg.json")?
-        .as_str()
-        .ok_or_else(|| "Expected 'name' to be a string in cfg.json")?;
+    let hostname = get_hostname_from_cfg(&cfg_json)?;
 
     println!("  host name: {hostname}");
 
@@ -131,6 +141,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::fs;
     use std::net::Ipv4Addr;
     use std::thread;
@@ -186,6 +197,95 @@ mod tests {
 
         validate_response_file(cfg_path, &cfg_body(hostname));
         validate_response_file(presets_path, "presets data");
+    }
+
+    #[test]
+    fn test_get_hostname_from_cfg_success() {
+        let cfg = json!({
+            "id": {
+                "name": "test_device"
+            }
+        });
+        
+        let result = get_hostname_from_cfg(&cfg);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "test_device");
+    }
+
+    #[test]
+    fn test_get_hostname_from_cfg_missing_id() {
+        let cfg = json!({
+            "other": "value"
+        });
+        
+        let result = get_hostname_from_cfg(&cfg);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "Missing 'id' field in cfg.json");
+    }
+
+    #[test]
+    fn test_get_hostname_from_cfg_missing_name() {
+        let cfg = json!({
+            "id": {
+                "other": "value"
+            }
+        });
+        
+        let result = get_hostname_from_cfg(&cfg);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "Missing 'name' field in cfg.json");
+    }
+
+    #[test]
+    fn test_get_hostname_from_cfg_name_not_string() {
+        let cfg = json!({
+            "id": {
+                "name": 123
+            }
+        });
+        
+        let result = get_hostname_from_cfg(&cfg);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "Expected 'name' to be a string in cfg.json");
+    }
+
+    #[test]
+    fn test_get_hostname_from_cfg_empty_hostname() {
+        let cfg = json!({
+            "id": {
+                "name": ""
+            }
+        });
+        
+        let result = get_hostname_from_cfg(&cfg);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "Hostname is empty or contains only whitespace");
+    }
+
+    #[test]
+    fn test_get_hostname_from_cfg_whitespace_only_hostname() {
+        let cfg = json!({
+            "id": {
+                "name": "   \t\n  "
+            }
+        });
+        
+        let result = get_hostname_from_cfg(&cfg);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "Hostname is empty or contains only whitespace");
+    }
+
+    #[test]
+    fn test_get_hostname_from_cfg_hostname_with_whitespace() {
+        let cfg = json!({
+            "id": {
+                "name": "  test_device  "
+            }
+        });
+        
+        let result = get_hostname_from_cfg(&cfg);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "  test_device  ");
     }
 
     #[test]
