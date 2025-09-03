@@ -55,11 +55,11 @@ fn get_hostname_from_cfg(cfg_json: &Value) -> Result<&str, Box<dyn std::error::E
         .ok_or_else(|| "Missing 'name' field in cfg.json")?
         .as_str()
         .ok_or_else(|| "Expected 'name' to be a string in cfg.json")?;
-    
+
     if hostname.trim().is_empty() {
         return Err("Hostname is empty or contains only whitespace".into());
     }
-    
+
     Ok(hostname)
 }
 
@@ -158,22 +158,33 @@ mod tests {
         format!(r#"{{"id":{{"name":"{}"}}}}"#, hostname)
     }
 
-    fn mock_wled_server(addr: &str, cfg_body: &str) -> thread::JoinHandle<()> {
+    fn mock_wled_server(
+        addr: &str,
+        cfg_body: &str,
+        presets_body: Option<&str>,
+    ) -> thread::JoinHandle<()> {
         // Start server in a background thread
 
-        let cfg_body = cfg_body.to_string(); // Clone the cfg_body to move into the thread
+        let cfg_body = cfg_body.to_string();
+        let presets_body = presets_body.map(|s| s.to_string());
 
         let server = Server::http(addr).unwrap();
         let handle = thread::spawn(move || {
-            for _ in 0..2 {
+            let max_requests = if presets_body.is_some() { 2 } else { 1 };
+
+            for _ in 0..max_requests {
                 if let Ok(request) = server.recv() {
                     let url = request.url();
                     let response = if url.ends_with("/cfg.json") {
                         Response::from_string(cfg_body.clone())
                         // .with_header("Content-Type: application/json".parse().unwrap())
                     } else if url.ends_with("/presets.json") {
-                        Response::from_string("presets data")
-                        // .with_header("Content-Type: application/json".parse().unwrap())
+                        if let Some(ref presets) = presets_body {
+                            Response::from_string(presets.clone())
+                            // .with_header("Content-Type: application/json".parse().unwrap())
+                        } else {
+                            Response::from_string("not found").with_status_code(404)
+                        }
                     } else {
                         Response::from_string("not found").with_status_code(404)
                     };
@@ -206,7 +217,7 @@ mod tests {
                 "name": "test_device"
             }
         });
-        
+
         let result = get_hostname_from_cfg(&cfg);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "test_device");
@@ -217,10 +228,13 @@ mod tests {
         let cfg = json!({
             "other": "value"
         });
-        
+
         let result = get_hostname_from_cfg(&cfg);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "Missing 'id' field in cfg.json");
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Missing 'id' field in cfg.json"
+        );
     }
 
     #[test]
@@ -230,10 +244,13 @@ mod tests {
                 "other": "value"
             }
         });
-        
+
         let result = get_hostname_from_cfg(&cfg);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "Missing 'name' field in cfg.json");
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Missing 'name' field in cfg.json"
+        );
     }
 
     #[test]
@@ -243,10 +260,13 @@ mod tests {
                 "name": 123
             }
         });
-        
+
         let result = get_hostname_from_cfg(&cfg);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "Expected 'name' to be a string in cfg.json");
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Expected 'name' to be a string in cfg.json"
+        );
     }
 
     #[test]
@@ -256,10 +276,13 @@ mod tests {
                 "name": ""
             }
         });
-        
+
         let result = get_hostname_from_cfg(&cfg);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "Hostname is empty or contains only whitespace");
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Hostname is empty or contains only whitespace"
+        );
     }
 
     #[test]
@@ -269,10 +292,13 @@ mod tests {
                 "name": "   \t\n  "
             }
         });
-        
+
         let result = get_hostname_from_cfg(&cfg);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "Hostname is empty or contains only whitespace");
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Hostname is empty or contains only whitespace"
+        );
     }
 
     #[test]
@@ -282,7 +308,7 @@ mod tests {
                 "name": "  test_device  "
             }
         });
-        
+
         let result = get_hostname_from_cfg(&cfg);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "  test_device  ");
@@ -291,7 +317,11 @@ mod tests {
     #[test]
     fn test_backup_wled_creates_file() {
         // Start server in a background thread
-        let servers = vec![mock_wled_server("127.0.0.1:88", &cfg_body("testwled"))];
+        let servers = vec![mock_wled_server(
+            "127.0.0.1:88",
+            &cfg_body("testwled"),
+            Some("presets data"),
+        )];
 
         // Use a temp directory
         let dir = tempdir().unwrap();
@@ -321,8 +351,12 @@ mod tests {
 
         // Start server in a background thread
         let servers = vec![
-            mock_wled_server("127.0.0.1:80", &cfg_body("testwled")),
-            mock_wled_server("127.0.0.1:8080", &cfg_body("testwled_port")),
+            mock_wled_server("127.0.0.1:80", &cfg_body("testwled"), Some("presets data")),
+            mock_wled_server(
+                "127.0.0.1:8080",
+                &cfg_body("testwled_port"),
+                Some("presets data"),
+            ),
         ];
 
         // Prepare mock WLED device
@@ -351,9 +385,47 @@ mod tests {
     }
 
     #[test]
+    fn test_backup_wled_invalid_cfg_json_no_files_written() {
+        let servers = vec![mock_wled_server(
+            "127.0.0.1:89",
+            "invalid json content",
+            None,
+        )];
+
+        let dir = tempdir().unwrap();
+        let out_dir = dir.path().to_path_buf();
+
+        let backup_result = backup_wled(
+            &IpAddr::V4("127.0.0.1".parse::<Ipv4Addr>().unwrap()),
+            89,
+            &out_dir,
+        );
+
+        assert!(
+            backup_result.is_err(),
+            "Backup should fail with invalid JSON"
+        );
+
+        let entries: Vec<_> = fs::read_dir(&out_dir).unwrap().collect();
+        assert_eq!(
+            entries.len(),
+            0,
+            "No files should be written when cfg.json parsing fails"
+        );
+
+        for handle in servers {
+            handle.join().unwrap();
+        }
+    }
+
+    #[test]
     fn test_backup_wleds_returns_error() {
         // Start server in a background thread. Use different ports to avoid conflicts.
-        let servers = vec![mock_wled_server("127.0.0.1:81", &cfg_body("testwled"))];
+        let servers = vec![mock_wled_server(
+            "127.0.0.1:81",
+            &cfg_body("testwled"),
+            Some("presets data"),
+        )];
 
         // Prepare mock WLED device
         let wleds = vec![
